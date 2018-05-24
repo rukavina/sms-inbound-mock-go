@@ -1,0 +1,9 @@
+{    
+    "name": "inboundtest",
+    "description": "Inbound SMS test",
+    "type": "application",
+    "require": {
+        "guzzlehttp/guzzle": "~6.0",
+        "monolog/monolog": "^1.23"
+    }
+}
