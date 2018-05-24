@@ -1,5 +1,3 @@
-/cmd/potgame-sms-bot/potgame-sms-bot
-/tools/sms-inbound-mock/vendor
-/tools/api-mock/api-mock
-/tools/sms-inbound-mock-go/sms-inbound-mock-go
-/tools/sms-inbound-mock-go/test_client/vendor
+/sms-inbound-mock-go
+/test_client/vendor
+/public/bower_components
