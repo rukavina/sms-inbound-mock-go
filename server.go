@@ -17,55 +17,6 @@ type Server struct {
 	Hub *WSHub
 }
 
-//MOMessage is original MO
-type MOMessage struct {
-	ShortID   string `json:"short_id"`
-	From      string `json:"from"`
-	Text      string `json:"text"`
-	Provider  string `json:"provider"`
-	Keyword   string `json:"keyword"`
-	MessageID string `json:"message_id"`
-	Language  string `json:"language"`
-}
-
-//MOReply is expected reply from client to server
-type MOReply struct {
-	Status string `json:"status"`
-}
-
-//MTRequest is MT request to server
-type MTRequest struct {
-	Account  string `json:"account"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	ShortID  string `json:"short_id"`
-	To       string `json:"to"`
-	Text     string `json:"text"`
-	Provider string `json:"provider"`
-	Keyword  string `json:"keyword"`
-	Price    string `json:"price"`
-	ExtID    string `json:"ext_id"`
-	DlrURL   string `json:"dlr_url"`
-}
-
-//MTResponse is MT response from server
-type MTResponse struct {
-	MsgID     string `json:"msg_id"`
-	Status    string `json:"status"`
-	ErrorCode string `json:"error_code"`
-	ErrorDesc string `json:"error_desc"`
-}
-
-//MTDlr is MT dlr struct
-type MTDlr struct {
-	Mobile  string `json:"mobile"`
-	ShortID string `json:"short_id"`
-	MsgID   string `json:"msgId"`
-	ExtID   string `json:"ext_id"`
-	Status  string `json:"status"`
-	Price   string `json:"price"`
-}
-
 func (s *Server) getUUID() string {
 	uuid, err := exec.Command("uuidgen").Output()
 	if err != nil {
@@ -77,11 +28,7 @@ func (s *Server) getUUID() string {
 
 //MTErrorResponse generates MTResponse for error cases
 func (s *Server) MTErrorResponse(errorCode string, message string) MTResponse {
-	return MTResponse{
-		Status:    "error",
-		ErrorCode: errorCode,
-		ErrorDesc: message,
-	}
+	return MTResponse{}
 }
 
 func (s *Server) jsonResult(w http.ResponseWriter, httpCode int, data interface{}) {
@@ -98,50 +45,75 @@ func (s *Server) serveMT(w http.ResponseWriter, r *http.Request) {
 	var req MTRequest
 	err = json.Unmarshal(body, &req)
 	if err != nil {
-		log.Panicf("MT request invalid: %s", err)
+		log.Printf("MT request invalid: %s", err)
 		s.jsonResult(w, 420, s.MTErrorResponse("5", "Format of text/content parameter iswrong."))
 		return
 	}
 	//check params
-	if req.Keyword == "" || req.Text == "" || req.Price == "" || req.Provider == "" || req.ShortID == "" || req.To == "" {
+	if req.Auth.Username == "" || req.Text == "" || req.Operator == "" || req.Receiver == "" || req.Sender == "" {
 		log.Println("MT request invalid params")
 		s.jsonResult(w, 420, s.MTErrorResponse("110", "Mandatory parameter(s) is missing"))
 		return
 	}
 	//send WS
-	var wsData map[string]string
-	err = json.Unmarshal(body, &wsData)
-	if err == nil {
-		wsMsg := &WSMessage{
-			MsgType: WSMsgTypeMT,
-			Data:    wsData,
-		}
-		s.Hub.BroadcastMessage(wsMsg)
-	} else {
-		log.Printf("Error decoding to WsData: %s", err)
+	wsMsg := &WSMessage{
+		MsgType: WSMsgTypeMT,
+		Data: map[string]string{
+			"type":                    req.MsgType,
+			"direction":               req.Direction,
+			"operator":                req.Operator,
+			"sender":                  req.Sender,
+			"receiver":                req.Receiver,
+			"dsc":                     req.DSC,
+			"text":                    req.Text,
+			"auth.Username":           req.Auth.Username,
+			"auth.Password":           req.Auth.Password,
+			"dlrRequest.callbackURL":  req.DlrRequest.CallbackURL,
+			"dlrRequest.eventsMask":   fmt.Sprintf("%d", req.DlrRequest.EventsMask),
+			"service.serviceID":       req.Service.ServiceID,
+			"service.country":         req.Service.Country,
+			"service.moMsgID":         req.Service.MOMsgID,
+			"service.textTail":        req.Service.TextTail,
+			"service.textServiceHead": req.Service.TextServiceHead,
+			"billing.currency":        req.Billing.Currency,
+			"billing.price":           fmt.Sprintf("%f", req.Billing.Price),
+			"billing.priceCode":       req.Billing.PriceCode,
+		},
 	}
+	s.Hub.BroadcastMessage(wsMsg)
 
 	messageID := s.getUUID()
 
 	res := MTResponse{
-		MsgID:  messageID,
-		Status: "success",
+		MsgType:   MsgTypeResponse,
+		Direction: MsgDirectionMT,
+		MsgID:     messageID,
 	}
 	s.jsonResult(w, 202, res)
 
 	log.Printf("Valid MT request and replied: OK [%s] %v\n", messageID, res)
 
-	if req.DlrURL == "" {
+	if req.DlrRequest.CallbackURL == "" {
 		return
 	}
 
 	dlr := MTDlr{
-		Mobile:  req.To,
-		ShortID: req.ShortID,
-		MsgID:   messageID,
-		ExtID:   req.ExtID,
-		Status:  "1",
-		Price:   req.Price,
+		MsgType:   MsgTypeDlr,
+		MsgID:     messageID,
+		Operator:  req.Operator,
+		Sender:    req.Sender,
+		Receiver:  req.Receiver,
+		DlrCode:   1,
+		DlrReason: "DELIVERED",
+		EffectiveBilling: EffectiveBilling{
+			Currency: req.Billing.Currency,
+			Price:    req.Billing.Price,
+			Kickback: 1.10,
+		},
+	}
+
+	if req.DlrRequest.CustomData != nil {
+		dlr.CustomData = req.DlrRequest.CustomData
 	}
 
 	//send dlr as go routine
@@ -150,15 +122,15 @@ func (s *Server) serveMT(w http.ResponseWriter, r *http.Request) {
 
 // send dlr
 func (s *Server) sendDlr(req MTRequest, dlr MTDlr) {
-	log.Println("Sending DLR notification to ", req.DlrURL)
+	log.Println("Sending DLR notification to ", req.DlrRequest.CallbackURL)
 	//give a timeout
 	time.Sleep(time.Second * 2)
-	res, err := s.makeHTTPRequest("POST", req.DlrURL, dlr)
+	res, err := s.makeHTTPRequest("POST", req.DlrRequest.CallbackURL, dlr)
 	if err != nil {
 		log.Printf("DLR response error %s", err)
 		return
 	}
-	log.Printf("DLR response: %v", res)
+	log.Printf("DLR response: %s", res)
 }
 
 // serveWs handles websocket requests from the peer.
@@ -180,16 +152,11 @@ func (s *Server) OnNewWsMessage(message *WSMessage) {
 	if message.MsgType != WSMsgTypeMO {
 		return
 	}
-	data, _ := json.Marshal(message.Data)
-	var req *MOMessage
-	err := json.Unmarshal(data, &req)
-	if err != nil {
-		log.Printf("Error unmarshal MO Message: %s", err)
+	req := s.createMoMessage(message)
+	if req == nil {
+		log.Printf("Error unmarshal MO Message")
 		return
 	}
-	req.MessageID = s.getUUID()
-	words := strings.Split(req.Text, " ")
-	req.Keyword = words[0] + "@" + req.ShortID
 	url, ok := message.Data["url"]
 	if !ok {
 		log.Printf("MO URL not defined")
@@ -197,6 +164,35 @@ func (s *Server) OnNewWsMessage(message *WSMessage) {
 	}
 	s.sendMO(url, req)
 
+}
+
+//createMoMessage creates MO from WS request
+func (s *Server) createMoMessage(message *WSMessage) *MOMessage {
+	msgID := s.getUUID()
+	req := &MOMessage{
+		MsgType:   MsgTypeText,
+		MsgID:     msgID,
+		Direction: MsgDirectionMO,
+		Operator:  message.Data["provider"],
+		Sender:    message.Data["from"],
+		Receiver:  message.Data["short_id"],
+		DSC:       MsgDSCGSM,
+		Text:      message.Data["text"],
+		Service: Service{
+			ServiceID: message.Data["sms_service_id"],
+			MOMsgID:   msgID,
+			Country:   message.Data["country"],
+		},
+		AddOns: AddOns{
+			Language: message.Data["language"],
+		},
+	}
+	sepIdx := strings.Index(req.Text, " ")
+	if sepIdx > 0 {
+		req.Service.TextServiceHead = req.Text[:sepIdx+1]
+		req.Service.TextTail = req.Text[sepIdx+1:]
+	}
+	return req
 }
 
 // send MO
@@ -208,22 +204,22 @@ func (s *Server) sendMO(url string, req *MOMessage) {
 		log.Printf("MO response error %s", err)
 		return
 	}
-	log.Printf("MO response: %v", res)
+	log.Printf("MO response: %s", res)
 
 	wsMsg := &WSMessage{
 		MsgType: WSMsgTypeMORep,
 		Data: map[string]string{
-			"status": res["status"],
+			"status": "success",
 		},
 	}
 	s.Hub.BroadcastMessage(wsMsg)
 }
 
 //makeHTTPRequest returns needed params for http request from call and yate message
-func (s *Server) makeHTTPRequest(method string, url string, req interface{}) (map[string]string, error) {
+func (s *Server) makeHTTPRequest(method string, url string, req interface{}) (string, error) {
 	reqBytes, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	r, err := http.NewRequest(method, url, bytes.NewBuffer(reqBytes))
 	r.Header.Set("Content-Type", "application/json")
@@ -232,21 +228,16 @@ func (s *Server) makeHTTPRequest(method string, url string, req interface{}) (ma
 	resp, err := client.Do(r)
 	if err != nil {
 		log.Printf("HTTP request error: %s", err)
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Reponse status not OK/200 but [%d]", resp.StatusCode)
+		return "", fmt.Errorf("Reponse status not OK/200 but [%d]", resp.StatusCode)
 	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	log.Printf("Client response: %s", string(body))
-	var res map[string]string
-	err = json.Unmarshal(body, &res)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
+	return string(body), nil
 }
