@@ -40,7 +40,7 @@ var app = {
                     break;
                 case 'mt':
                     toastr.success('MT success');
-                    $('#responseSMS').append('<p>' + self.nl2br(msg.data.text) + '<span class="badge">' + msg.data.price + '</span></p><hr>');
+                    $('#responseSMS').append('<p>' + self.nl2br(self.escapeHtml(msg.data.text)) + '<span class="badge">' + msg.data.price + '</span></p><hr>');
                     self.logData(msg.data);
                     break;                    
             }                        
@@ -90,8 +90,15 @@ var app = {
         for(var key in data){
             self.logLine(key + ": " + data[key]);
         };        
-    }
-    
+    },
+    escapeHtml(unsafe) {
+        return unsafe
+             .replace(/&/g, "&amp;")
+             .replace(/</g, "&lt;")
+             .replace(/>/g, "&gt;")
+             .replace(/"/g, "&quot;")
+             .replace(/'/g, "&#039;");
+    }    
 };
         
 
